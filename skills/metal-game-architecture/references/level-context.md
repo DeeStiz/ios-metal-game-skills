@@ -10,37 +10,30 @@ renderer tables) was a process-wide `static let`. That is fast and thread-safe, 
 
 ## The pattern
 
-Wrap each level-derived static in a `LevelScoped<T>` whose storage lives in the current
-`LevelContext`:
+Prefer passing an immutable level context explicitly into sessions, workers and render plans.
+If adapting static-heavy code, a scoped cache can reduce migration churn, but a mutable global
+"current context" must not be read midway through a task. Capture one context and generation
+at task submission and reject results belonging to retired generations.
 
-```swift
-final class LevelContext: @unchecked Sendable {
-    let source: LevelSource
-    let generation: Int
-    fileprivate var storage: [ObjectIdentifier: Any] = [:]
-    fileprivate let lock = NSLock()
-}
+Conceptual pseudocode, not a complete Swift synchronization implementation:
 
-struct LevelScoped<T>: Sendable {
-    let build: @Sendable (LevelContext) -> T
-    var value: T { LevelContext.current.value(for: self) }  // builds once per context
-}
-
-enum Scenario {
-    static let proceduralScene = LevelScoped { ctx in compileScene(ctx.source) }
-}
+```text
+context = makeContext(source, generation)
+product = context.once(key, build)
+plan = prepare(context, snapshot)
+publish(plan) only if plan.generation == activeGeneration
 ```
 
-- Keep the accessor's old name and type so call sites barely change.
-- Within a context a value builds once on first read; concurrent readers **wait** for that build
-  (same once-semantics as `static let`, so parallel launch prewarm still works).
-- `activate(_:)` makes a fresh context current; the old one is released when nothing reads it.
+`once` needs stable key identity, synchronization, build-failure propagation, and dependency-cycle
+handling. Do not hold a nonrecursive cache lock while recursively building dependencies. Readers
+must wait for one build or receive its error. Avoid `@unchecked Sendable` unless the storage and
+all access paths actually satisfy its synchronization contract. Independent level sessions should
+not depend on a process-wide mutable context.
 
 ## Finding every static
 
-Do a dependency walk from the level resolver, not a text search. In practice ~250 values moved,
-including renderer tables and a few level-independent constants that referenced them (cheap to
-rebuild, simpler than splitting).
+Combine scoped searches for static caches with a dependency walk from the resolver. Include
+indirect dependencies such as renderer tables and constants built from level-derived values.
 
 ## Process caches
 
@@ -51,14 +44,16 @@ fast.
 
 ## Teardown order
 
-1. Stop the simulation runtime.
-2. End platform sessions (audio voices, haptics, controller input workers).
-3. Drop the presentation controller; `dismantleUIView` invalidates the display link and releases
-   the renderer.
-4. The session controller's `deinit` stops the authority queue and shuts the physics scene down.
-5. **Wait for an object census to read zero** (session, presentation controller, Metal renderer,
-   mesh renderer, Metal view) before activating the next context. Log it:
-   `LEVEL_SWITCH phase=teardown released=1 census=[...] footprintMiB=...`.
+1. Stop accepting new simulation/render work for the retiring generation.
+2. Cancel or join its workers; ensure completions cannot publish into the new session.
+3. Stop platform sessions and invalidate the view's display link.
+4. Drain submitted GPU work asynchronously and retain resources until completion. Never block
+   the main thread waiting for work whose completion requires that thread.
+5. Explicitly shut down the physics scene after its users finish, then release session/context
+   ownership. Use deinit assertions and object counts to detect leaks, not as the shutdown API.
+6. Activate the new context when its required resources are ready. If generations overlap during
+   a transition, keep separate ownership and enforce a peak memory budget. Bound teardown waits
+   and report outstanding owners instead of waiting forever.
 
 ## Tests
 
@@ -66,8 +61,8 @@ Load A, B, A, B in one process and assert byte-identical products each time (sce
 lists, spawn, roster). Assert no A-only entity appears in B. Assert a retired context deallocates.
 Assert values build once under concurrency.
 
-## Measured result
+## Measurement
 
-Teardown 410–490 ms. Light levels reload in ~2.5 s instead of a ~11 s cold launch. Memory after
-ten alternating loads showed no growth (Simulator readings swing 100–300 MiB because freed pages
-are compressed lazily — compare trends, not single readings).
+Record cold and warm load latency, outstanding owners and memory trends across repeated A/B
+switches. Compare like-for-like captures on the same platform. Simulator memory behavior does
+not establish physical-device memory headroom.

@@ -8,12 +8,12 @@ license: MIT
 
 ## Principle
 
-**Quality follows measured GPU time, not the OS thermal label.** On a flagship device the OS
-reported thermal state `fair` for an entire 3.5-minute session. An early ladder treated `fair` as
-pressure: 0.60 render scale, low shaders and a 30 Hz cap — while completed GPU frames were
-8.7 ms p50 / 10.9 ms p90, comfortably inside a 16.6 ms budget. Treat `fair` as normal play. Only
-`serious`/`critical` and Low Power Mode engage a fixed safety path (e.g. 0.5 scale, simple
-materials, 30 Hz).
+Combine measured GPU/CPU cost, sustained thermal trends, battery policy and user preferences.
+Avoid drastic quality cuts based solely on one thermal-state sample, but do not ignore heat
+because GPU frames are currently fast. CPU, display and other workloads also contribute.
+Respond progressively to sustained pressure and promptly to serious/critical thermal conditions.
+Use hysteresis and retest sustained sessions on each supported device class. Low Power Mode can
+select a battery-saving policy; it is not proof of GPU overload.
 
 ## Device tiers
 
@@ -26,22 +26,28 @@ Pick a tier from `MTLDevice.supportsFamily(.appleN)`, not from model strings:
 | base | Apple7/8 | 60 | 0.67 … 0.50 | temporal |
 | entry | older | 30 | 0.60 … 0.50 | temporal if supported |
 
-Numbers are a starting point that held up on device; tune per game.
+These are illustrative initial settings, not verified budgets for every device in a family.
+Query scaler support and supported input-scale ranges, and account for memory and CPU limits.
+Select a supported fallback when a feature or scale is unavailable.
 
 ## Dynamic resolution controller
 
-Bucket per second: mean completed GPU ms, fraction of GPU frames over budget, presented misses.
+Bucket per second: completed GPU ms, fraction over budget, presented misses, CPU cost and
+thermal state. The following windows and percentages are tuning examples, not platform rules.
 
 - **Step down** after 3 s where mean GPU > 90% of budget, ≥ 25% of frames over budget, and misses
-  in 2 of the 3 seconds. Seconds with misses but < 10% over-budget GPU frames are CPU/main-thread
-  misses — resolution won't fix them, so don't shed.
+  in 2 of the 3 seconds. Misses with low completed-GPU cost suggest CPU/scheduling pressure;
+  correlate encode/callback timing before assigning a cause. Resolution reduction is unlikely
+  to help a confirmed CPU bottleneck.
 - **Step up** after a quiet 6 s window whose GPU time *projected to the next step*,
   `ms × (next/current)²`, is < 80% of budget. Otherwise probe after 15 s quiet, doubling to 120 s
-  after a failed probe.
+  after a failed probe. The squared-scale estimate models pixel-proportional cost only; fixed
+  geometry/pass overhead requires measured probes and can make that estimate optimistic.
 - 3 s hold per change; 5 s grace after load.
-- Only lower tiers may drop to 30 Hz at the scale floor. Flagship/pro hold 60: at a low cadence
-  DVFS stretches frame timings and the headroom test never passes again.
-- A separate sustained-heat governor (only while thermal is `fair`): if the per-second median GPU
+- Allow a measured cadence reduction on any tier when sustained pressure requires it. Account
+  for DVFS when estimating headroom after a cadence change; use bounded probes and cooldowns
+  rather than assuming a slower GPU clock means the original workload cannot recover.
+- Example sustained-load hysteresis to calibrate alongside thermal trends: if the per-second median GPU
   ≥ 75% of budget for 20 s, lower the ceiling one step; release at ≤ 57% for 30 s; 60 s minimum
   hold.
 - Per-pass GPU "rungs" should shed non-resolution work first (shadow cadence/cascades, AO,
@@ -49,20 +55,30 @@ Bucket per second: mean completed GPU ms, fraction of GPU frames over budget, pr
 
 ## MetalFX
 
-- **Temporal needs jitter.** With jitter hard-coded to zero temporal recovers nothing over spatial.
-  Use a Halton(2,3) sub-pixel jitter on the main pass projection and motion vectors (not
-  shadows) and pass it to the scaler.
+- **Define temporal inputs precisely.** Temporal MetalFX requires iOS 16+ and a supported
+  device. Check `supportsDevice`, input-scale limits and descriptor/texture compatibility.
+  Jitter the color projection (for example Halton(2,3)); provide offsets in input-pixel units.
+  Supply current-to-previous motion: at scale 1, an object moving 10 pixels right needs -10
+  horizontal motion. Set motionVectorScaleX/Y to convert your units to input pixels.
+  Use unjittered transforms for vectors or remove the jitter delta. On iOS 27+, vectors that
+  include jitter may instead use `isJitteredMotionVectorsEnabled = true`; its default is false.
+  Do not add jitter twice. Match texture Y orientation and `isDepthReversed` to the renderer.
+  Validate a static camera, camera pan, moving/deforming objects and disocclusion separately.
+
 - **Prepare before adopting.** Build the temporal scaler and a same-size spatial companion on a
   worker; switch render scale only once both exist. Per-sample scale swaps caused visible stalls
   and native/soft frames while scalers built.
 - **Motion vectors per drawn surface, not per owner.** One character model drew 35 surfaces; a
-  128-owner capacity overflowed with 3–4 moving enemies and failed every combat frame. Use a
-  per-surface capacity (768 worked) and derive a surface's previous transform from its owner's
-  rigid motion when exact history is missing.
-- **Reactive mask instead of failure.** Surfaces with no truthful motion (ring full, alpha on a
-  moving owner, a rising flood whose vertices changed) go into the reactive mask. A frame with
-  incomplete motion runs temporal with a history reset. Only persistent gaps (15 consecutive
-  failures or > 25% sustained) latch to spatial, until 30 clean frames pass.
+  fixed owner-sized capacity overflowed when models contained many surfaces. Size or grow
+  buffers from actual draw counts and enforce bounds. Rigid owner motion is only a valid
+  fallback for rigid surfaces; skinning and deformation need their own previous geometry.
+- **Use regional history rejection where supported.** Reactive-mask descriptor configuration
+  requires iOS 17.4+. Enable it with the correct format and provide values in [0,1]; 1 rejects
+  history at that pixel. Use it for transient unreliable motion/transparency rather than
+  resetting the whole frame continuously. Reset full history on camera cuts, scene changes or
+  incompatible history resources. If motion remains invalid, use a supported spatial/native
+  fallback and log the cause. Calibrate recovery windows rather than copying a fixed count.
+
 - **Mip bias.** The colour pass renders at render resolution and MetalFX reconstructs the
   drawable, so texture mips follow render-resolution derivatives and look soft. Pass
   `bias = clamp(log2(renderWidth / drawableWidth), -0.6, 0)` and sample with `bias(b)`; scale
@@ -83,7 +99,9 @@ so a play session can be diagnosed afterwards (see `ios-game-device-telemetry`).
 ## Checklist when "it looks blurry"
 
 1. Is MetalFX actually temporal? (count temporal samples)
-2. Is jitter non-zero and applied to both projection and motion?
+2. Are projection jitter, motion-vector convention and scaler offsets consistent?
 3. Is mip bias applied?
 4. Is the scale stuck at the floor because of a thermal label rather than GPU time?
 5. Is distance haze washing things out at dusk? (see `metal-render-debugging`)
+
+Sources: [temporal scaler descriptor](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscalerdescriptor), [jittered vectors](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscalerdescriptor/isjitteredmotionvectorsenabled), [reactive mask](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscalerbase/reactivemasktexture). Verify availability against the deployment SDK.

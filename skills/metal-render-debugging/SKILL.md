@@ -15,8 +15,9 @@ depth at `[[texture(9)]]`. A `bindLightingTextures()` helper ran again per water
 slot 9 for the weather occlusion map. Water read a top-down precipitation depth as its bed depth
 and drew a snow-white sheet — only on levels with weather.
 
-- Keep a **slot map** in one header shared by Swift and MSL (`enum TextureSlot: Int`), never
-  literals.
+- Keep a **slot map** in a C-compatible shared header with explicit integer constants, imported
+  through the app bridge and included by MSL, or generate matching Swift/MSL declarations.
+  A Swift enum cannot itself be included by an MSL shader. Validate generated layouts.
 - Give pass-specific inputs slots above the shared range.
 - When a bug appears only under one feature (weather, night, flood), suspect a binding that
   feature adds.
@@ -42,8 +43,9 @@ alternating (see `metal-visual-regression`).
 ## Black holes / speckles in alpha-tested foliage at LOD transitions
 
 Screen-door dithered LOD cross-fades leave holes the sky pass can't fill, which showed black.
-Use **rank-based card fades**: each card has a fixed rank and is drawn while its rank is below its
-LOD's visibility fraction, so the outgoing LOD drops cards as the incoming adds them. No dither.
+First inspect background clearing, depth writes and sample/discard behavior. Rank-based card
+fades are one alternative: pair outgoing/incoming coverage and verify the silhouette. Dithering
+is not inherently invalid; choose a transition compatible with the depth and temporal pipeline.
 
 ## Geometry missing / "lid" deleted / see-through terrain
 
@@ -71,7 +73,8 @@ occlusion map so covered surfaces stay dry.
 
 Ship debug views behind a function constant or env knob: `1` NaN check (green ok, magenta bad),
 `2` LOD lanes, `3` shading normal, `4` shadow / N·L / ambient. Also an AO-only and a raw-HDR view.
-Alpha cards: mirror a back-facing normal through the card plane instead of flipping it.
+For alpha cards, compare two-sided normal conventions against the authored normals and lighting
+model; avoid applying a universal flip/mirror rule without a debug-normal capture.
 
 ## Crash after a big event
 

@@ -25,13 +25,18 @@ SwiftUI app shell ─► session controller (adapter) ─► engine reducers (pu
 
 ## Rules that paid off
 
-1. **Engine is a SwiftPM package with no UIKit/Metal imports.** It builds and tests on the Mac
-   in seconds. The app target holds the renderer, shaders, HUD and platform services. Shader and
-   renderer code is only compiled by the app build, so run an app build for those changes.
-2. **Fixed-step authority, independent of presentation rate.** Gameplay steps at exactly 1/60 s
-   (physics substeps ≤ 1/120 s). Presentation runs 30–120 Hz. The poll runs *zero or one* step
-   per callback and rebases missed intervals; never catch up in bursts (burst catch-up turns a
-   single hitch into a spiral).
+1. **Keep simulation independently testable.** One useful layout is a pure SwiftPM engine with
+   a native physics bridge and no UIKit/Metal dependency. Put renderer, shaders, HUD and platform
+   services in app targets. Build the actual renderer/shader targets after changing them; engine
+   tests alone do not validate those targets.
+2. **Fixed-step authority, independent of presentation rate.** Choose a simulation interval
+   for your physics/gameplay requirements (for example, 1/60 s), independent of 30/60/120 Hz
+   presentation. Use a dedicated simulation scheduler or a bounded accumulator. At 30 Hz,
+   a display-driven 60 Hz simulation normally needs two ticks per callback. Bound catch-up
+   work and explicitly choose what overload does: slow simulation, discard elapsed wall time,
+   or stall presentation. Log dropped time; do not silently claim real-time progress.
+   On resume, reset the wall-clock origin instead of replaying the background interval.
+
 3. **Publish one settled world product per tick.** After the tick's world work settles, publish
    a single immutable state object. Mission, AI, HUD and renderer all read that one product
    instead of inventing parallel truth.
@@ -44,16 +49,23 @@ SwiftUI app shell ─► session controller (adapter) ─► engine reducers (pu
 6. **Presentation-only systems are labeled as such.** Wildlife, wind sway, view-model springs,
    camera shake and aim telegraphs read authority output and never feed it. Write it in the type
    doc comment so later edits don't cross the line.
-7. **Determinism by construction.** No unseeded randomness in the engine. Use integer-hash value
-   noise / fbm seeded from content, not `Foundation` RNG. Sort by stable IDs, not dictionary
-   order. This is what makes replays, checkpoints, visual regression and cache keys possible.
-8. **Checkpoints carry an authority hash** and restore rejects a mismatch. Version the schema per
-   domain (an AI roster change bumps only the encounter schema).
+7. **Define the determinism contract.** Seed gameplay randomness, sort stable IDs, and record
+   input by tick. Distinguish repeatability within one build from cross-device replay or lockstep.
+   Pin physics version, build flags, substeps and solver settings; preserve native physics state
+   in checkpoints. Async results need deterministic commit ticks or recorded commit events:
+   revision fencing alone does not make completion timing repeatable. Test identical input
+   traces across frame rates, worker schedules, restores and intended devices. A seeded RNG
+   conforming to Swift's RandomNumberGenerator is fine; unseeded gameplay RNG is not.
+
+8. **Checkpoints identify schema and content compatibility.** Verify integrity and reject
+   incompatible state unless a tested migration exists. Version domains separately when their
+   dependencies allow it; include native physics state needed to reproduce subsequent ticks.
 9. **Level-derived state lives in a context, not in `static let`.** See
    `references/level-context.md`. Process-wide statics make in-process level switching
    impossible and leak the previous level.
-10. **SwiftUI is the shell, not the game.** A `UIViewRepresentable` hosts a `UIView` that owns
-    the `CAMetalLayer` and `CAMetalDisplayLink`. SwiftUI gets compact, cache-keyed scalar
+10. **SwiftUI is the shell, not the game.** For an iOS 17+ custom presentation path, a
+    `UIViewRepresentable` can host a view owning `CAMetalLayer` and `CAMetalDisplayLink`.
+    An existing MTKView-based renderer can preserve the same ownership boundaries. SwiftUI gets compact, cache-keyed scalar
     snapshots (labels, values, callbacks) so the HUD does not invalidate at 120 Hz when nothing
     changed. It never receives mutable world or physics objects.
 
@@ -71,11 +83,10 @@ SwiftUI app shell ─► session controller (adapter) ─► engine reducers (pu
 
 ## Project hygiene
 
-- Generate the Xcode project from a spec (`xcodegen` `project.yml`). Commit the generated
+- If the repository uses a project generator (for example XcodeGen), treat its spec as the source. Commit the generated
   project if CI or teammates need it, but regenerate on conflicts instead of hand-merging
   `project.pbxproj`.
-- Split very large types into ordered sibling files (`GameSession+01Core.swift`,
-  `+02Authority.swift`, …) so readers and agents find code by name.
+- Split large types by responsibility when it improves navigation; follow the existing project conventions.
 - Gate debug features behind environment variables read in one place, logged on launch
   (see the `ios-game-simulator-automation` skill).
 
@@ -84,3 +95,5 @@ SwiftUI app shell ─► session controller (adapter) ─► engine reducers (pu
 - `references/level-context.md` — in-process level switching without leaks.
 - `references/water-and-hazards-as-authority.md` — why water, fire and floods are world state,
   not shaders.
+
+Sources: [Jolt determinism and architecture](https://github.com/jrouwe/JoltPhysics/blob/master/Docs/Architecture.md). The SwiftPM/app split is a suggested layout; use the actual build targets when choosing checks.

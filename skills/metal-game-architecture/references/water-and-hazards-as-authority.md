@@ -1,7 +1,7 @@
 # Water, fire and floods are world state
 
-A water surface is not a shader. Treat it as deterministic world authority with a renderer
-consumer:
+When water affects movement, damage or world topology, model those effects in world authority
+and render the result. Cosmetic-only water can remain a presentation effect. Example components:
 
 - **Descriptor** per body: kind, bathymetry, optical profile, interaction profile, barriers
   (dams, banks), drainage metadata.
@@ -28,8 +28,9 @@ masking) and by presentation (fire volumes, flood mesh, audio beds) through a br
 
 - **Shared mesh budget overflow:** spilled water overran a shared water vertex buffer and
   crashed. Give dynamic surfaces their own capacity and clamp with a logged warning.
-- **Rising flood vs temporal upscaling:** a surface whose vertex arrays change every frame has no
-  valid motion history. Write it into the MetalFX reactive mask instead of failing the frame (see
-  `metal-adaptive-quality`).
+- **Rising flood vs temporal upscaling:** changing topology may invalidate motion history.
+  Preserve previous geometry when possible; otherwise use a supported reactive mask (MetalFX
+  configuration requires iOS 17.4+) for affected pixels or a spatial fallback. A changing vertex
+  array alone does not prove motion vectors are impossible.
 - **Leftover water in valleys:** a flood solver on nearly flat terrain leaves puddles. Give valleys
   real slope or add drainage sinks.

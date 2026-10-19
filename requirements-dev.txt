@@ -1,0 +1,4 @@
+# Python 3.14. Validator and behavioral test dependencies.
+PyYAML>=6.0.3,<7
+numpy>=2.3,<3
+Pillow>=12,<14

@@ -8,7 +8,8 @@ license: MIT
 
 Split every feel feature into **authority** (affects outcomes, runs on the fixed step,
 checkpointed) and **presentation** (visual/audio/haptic only, runs on the frame delta, never feeds
-back).
+back). The combat examples assume a first-person action game; adapt them to your controls,
+accessibility requirements and genre rather than imposing that design on an existing game.
 
 ## Weapons
 
@@ -17,7 +18,8 @@ back).
   Runs on the fixed step so replays match.
 - **View-model kick and sway** are presentation: critically damped springs integrated on the
   renderer's own delta, triggered by a fire serial in the snapshot. A small camera pitch punch is
-  visual only and never feeds aim.
+  visual only and never feeds aim. Keep the reticle and shot feedback aligned with authoritative
+  aim; test that cosmetic camera motion cannot make the displayed sight misleading.
 - Ejected casings and surface-specific impact ejecta (splinters, drywall, glass, chips, soil,
   sparks) are render FX.
 - Hit markers, a distinct kill confirm, and damage-direction arcs toward the attacker — each with
@@ -28,15 +30,18 @@ back).
 - Blast/collapse shake with distance falloff, scaled by a **Reduce camera shake** setting and the
   system **Reduce Motion** flag.
 - Slow motion for big moments (chain reactions, a collapse in view): stretch the *authority
-  timeline* — the same fixed ticks arrive less often — so outcomes never change. Never start it,
-  and cancel it, when the player was recently hit, is low on health, or is in combat.
+  timeline* through an explicit time-scale policy while preserving the chosen fixed integration
+  interval. Record time-scale events and tick-indexed input for replay; outcomes can still differ
+  if input/timers use wall time. Decide whether combat permits slow motion as a product rule,
+  with player control and accessibility options rather than a universal health/combat restriction.
 
 ## Haptics (Core Haptics)
 
 Author `CHHapticPattern`s per weapon fire, reload, placing and detonating charges, near/far blasts
 (scaled by distance, **delayed by the speed of sound**), collapse rumble, landing and player hits.
 Settings: on/off and intensity. Route through one service so the session can stop all players on
-teardown.
+teardown. Check hardware support, handle engine stopped/reset callbacks and interruptions,
+and recreate players after reset. Unsupported devices must retain complete audio/visual feedback.
 
 ## Audio
 
@@ -57,10 +62,13 @@ teardown.
   checkpoint the timer. Publish `ticksUntilAttack` in the snapshot.
 - Presentation turns that into grenade wind-up and arc preview, aim glint, suppressive-fire lanes,
   alert icons, and spoken callouts with subtitles.
-- Bound sight/attack ranges by **on-phone readability** (roughly 38–46 m sight, 28–36 m attack in
-  a first-person phone game); calm patrols shouldn't spot a player at the insertion point.
+- Tune sight/attack ranges for **on-phone readability**, field of view, contrast, screen size and
+  control precision. Check difficulty and insertion safety through representative playtests;
+  distances from one first-person game are not portable fairness limits.
 - Navigation: grid A* over a level-derived grid inflated by the agent capsule, validated against
   live collision; an unreachable goal gets a rejection and backoff, never a silent intent change.
   Log every replan behind a debug flag.
 - Reactive behaviour sells the world: guards beat out fires near their posts, back away from
   creaking structures, call out vehicles, alarms and collapses.
+
+Source: [Core Haptics engine](https://developer.apple.com/documentation/corehaptics/chhapticengine). Cosmetic randomness may be nondeterministic in ordinary play; seed or freeze it for repeatable visual/audio tests.

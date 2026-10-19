@@ -2,11 +2,18 @@ name: validate
 on: [push, pull_request]
 jobs:
   skills:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: python3 scripts/validate_skills.py
+          python-version: "3.14"
+      - run: python3.14 -m pip install -r requirements-dev.txt
+      - run: python3.14 scripts/validate_skills.py
       - run: bash -n skills/ios-game-simulator-automation/scripts/sim_smoke.sh scripts/install.sh
+      - run: python3.14 -m unittest discover -s tests -v
+      - if: runner.os == 'macOS'
+        run: python3.14 tests/swift_integration.py

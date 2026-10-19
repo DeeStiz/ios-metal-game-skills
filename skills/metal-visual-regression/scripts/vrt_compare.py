@@ -18,7 +18,9 @@ failure signatures:
   z-fight           frame b departs from both a and c in the same direction while a ~ c, beyond the
                     baseline's own alternation
 Writes REPORT_DIR/report.json and REPORT_DIR/index.html (baseline | candidate | diff, changed tiles
-boxed). Exit status 1 when any frame fails.
+boxed). Exit 1 for differences or incomplete captures, 2 for invalid arguments/paths.
+Capture sets must be nonempty and match. Sequences start at 00 with no gaps; static
+sequences need at least 2 frames, moving sequences at least 3. Baselines are never modified.
 
 Calibrate the thresholds below from two captures of the SAME build: a deterministic capture mode
 should make them nearly identical (the reference project measured <= 4.3/255 per tile).
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import hashlib
 import json
 import re
 import sys
@@ -38,7 +41,7 @@ try:
     import numpy as np
     from PIL import Image, ImageDraw
 except ImportError:
-    sys.exit("vrt_compare.py needs numpy and Pillow: python3 -m pip install numpy pillow")
+    sys.exit("vrt_compare.py needs numpy and Pillow: python3.14 -m pip install numpy pillow")
 
 TILE = 24
 SSIM_TILE_FAIL = 0.6         # a tile this dissimilar with a mean |delta| above 4 ...
@@ -80,9 +83,11 @@ def ssim_map(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def tiles(a: np.ndarray, reduce: str = "mean") -> np.ndarray:
-    th, tw = a.shape[0] // TILE, a.shape[1] // TILE
-    t = a[: th * TILE, : tw * TILE].reshape(th, TILE, tw, TILE, *a.shape[2:])
-    return t.mean(axis=(1, 3)) if reduce == "mean" else t.std(axis=(1, 3))
+    # Include partial edge tiles without padding their statistics with invented pixels.
+    reducer = np.mean if reduce == "mean" else np.std
+    return np.array([[reducer(a[y:y + TILE, x:x + TILE], axis=(0, 1))
+                      for x in range(0, a.shape[1], TILE)]
+                     for y in range(0, a.shape[0], TILE)])
 
 
 def sky_reference(std_t: np.ndarray, mean_t: np.ndarray):
@@ -123,7 +128,7 @@ def analyse(base: np.ndarray, cand: np.ndarray) -> dict:
     }
     counts = {k: int(v.sum()) for k, v in signatures.items()}
     flagged = {k: c for k, c in counts.items() if c >= SIGNATURE_MIN_TILES}
-    status = "fail" if int(changed.sum()) >= CHANGED_TILES_FAIL or flagged else "pass"
+    status = "fail" if int(changed.sum()) >= min(CHANGED_TILES_FAIL, changed.size) or flagged else "pass"
     return {"status": status, "ssimMin": float(ssim_t.min()), "deltaMean": float(delta_t.mean()),
             "changedTiles": int(changed.sum()), "signatures": flagged, "_changed": changed}
 
@@ -173,31 +178,55 @@ def main() -> int:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--tile", type=int, default=TILE)
     args = ap.parse_args()
+    if args.tile < 1:
+        ap.error("--tile must be positive")
     TILE = args.tile
-    out = args.out or args.candidate / "vrt-report"
+    args.baseline, args.candidate = args.baseline.resolve(), args.candidate.resolve()
+    if not args.baseline.is_dir() or not args.candidate.is_dir():
+        ap.error("baseline and candidate must be existing directories")
+    if args.baseline == args.candidate or args.baseline in args.candidate.parents or args.candidate in args.baseline.parents:
+        ap.error("capture directories must be distinct and not nested")
+    out = (args.out or args.candidate / "vrt-report").resolve()
+    if out == args.candidate or out in args.candidate.parents or out == args.baseline or out in args.baseline.parents or args.baseline in out.parents:
+        ap.error("report must not overwrite a capture root or write inside the baseline")
     out.mkdir(parents=True, exist_ok=True)
 
     results, rows, failed = [], [], 0
     sequences: dict[tuple, list] = defaultdict(list)
-    for cand_path in sorted(args.candidate.rglob("*.png")):
-        if out in cand_path.parents:
+    def problem(frame, reason):
+        nonlocal failed
+        failed += 1
+        results.append({"frame": str(frame), "status": "fail", "reason": reason})
+        rows.append(f"<h3>{html.escape(str(frame))}: {html.escape(reason)}</h3>")
+
+    def captures(root):
+        return {p.relative_to(root) for p in root.rglob("*")
+                if p.is_file() and p.suffix.lower() == ".png" and out not in p.resolve().parents}
+
+    base_names, cand_names = captures(args.baseline), captures(args.candidate)
+    if not base_names or not cand_names:
+        problem("capture-set", "both capture sets must be nonempty")
+    for rel in sorted(base_names - cand_names):
+        problem(rel, "missing candidate frame")
+    for rel in sorted(cand_names - base_names):
+        problem(rel, "no accepted baseline; new frame requires review")
+    for rel in sorted(base_names & cand_names):
+        cand_path, base_path = args.candidate / rel, args.baseline / rel
+        try:
+            base, cand = load(base_path), load(cand_path)
+        except (OSError, ValueError) as error:
+            problem(rel, f"unreadable capture: {error}")
             continue
-        rel = cand_path.relative_to(args.candidate)
-        base_path = args.baseline / rel
         m = SEQ.match(cand_path.name)
         if m:
             sequences[(str(rel.parent), m["shot"], m["kind"])].append((int(m["index"]), cand_path, base_path))
-        if not base_path.exists():
-            results.append({"frame": str(rel), "status": "new"})
-            continue
-        base, cand = load(base_path), load(cand_path)
         r = analyse(base, cand)
         changed = r.pop("_changed", None)
         r["frame"] = str(rel)
         results.append(r)
         if r["status"] == "fail":
             failed += 1
-            stem = re.sub(r"[^A-Za-z0-9_.-]", "_", str(rel))
+            stem = hashlib.sha256(str(rel).encode()).hexdigest()[:16]
             views = [save_view(base, out / f"{stem}.base.png"),
                      save_view(cand, out / f"{stem}.cand.png", changed),
                      save_view(diff_view(base, cand) if base.shape == cand.shape else cand, out / f"{stem}.diff.png")]
@@ -206,7 +235,16 @@ def main() -> int:
 
     for (parent, shot, kind), frames in sorted(sequences.items()):
         frames.sort()
+        label = shot if parent == "." else f"{parent}/{shot}"
+        indices = [i for i, _, _ in frames]
+        if indices != list(range(len(indices))) or len(indices) < (2 if kind == "s" else 3):
+            problem(label, "incomplete sequence: use contiguous indices from 00 and at least 2 static / 3 moving frames")
+            continue
         cand_frames = [load(p) for _, p, _ in frames]
+        base_frames = [load(b) for _, _, b in frames]
+        if len({a.shape for a in cand_frames + base_frames}) != 1:
+            problem(label, "inconsistent sequence dimensions")
+            continue
         metric = temporal(cand_frames, kind)
         if metric is None:
             continue
@@ -219,12 +257,12 @@ def main() -> int:
             floor = base_metric + ALTERNATION_MARGIN if base_metric is not None else ALTERNATION_FRACTION
             bad = (metric > ALTERNATION_FRACTION) & (metric > floor)
             name = "z-fight"
-        if int(bad.sum()) >= SIGNATURE_MIN_TILES:
+        if int(bad.sum()) >= min(SIGNATURE_MIN_TILES, bad.size):
             failed += 1
             label = shot if parent == "." else f"{parent}/{shot}"
             entry = f"{label} {name}: {int(bad.sum())} tiles"
             results.append({"frame": label, "status": "fail", "signatures": {name: int(bad.sum())}})
-            view = save_view(cand_frames[len(cand_frames) // 2], out / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', shot)}.{name}.png", bad)
+            view = save_view(cand_frames[len(cand_frames) // 2], out / f"{hashlib.sha256(label.encode()).hexdigest()[:16]}.{name}.png", bad)
             rows.append(f"<h3>{html.escape(entry)}</h3><div><img src='{view}'></div>")
 
     (out / "report.json").write_text(json.dumps({"failed": failed, "frames": results}, indent=2))

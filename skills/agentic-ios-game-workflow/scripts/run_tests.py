@@ -6,18 +6,21 @@ live-scene fixtures (compiled scene, terrain, structures) from scratch. This run
 tests optimized and runs whole test classes in a few long-lived shard processes, so each
 fixture is built once per shard.
 
+XCTest only: fails if discovery includes Swift Testing or an unknown name format.
+Use standard `swift test` for mixed-framework packages. Requires macOS, Xcode and Python 3.14.
 Run it from the package root (or pass --package-path).
 
 Usage:
   run_tests.py                 # build (release) + run everything
   run_tests.py Terrain Player  # only classes whose name contains a pattern
   run_tests.py --fast          # optimized incremental build: debug config + -O in .build/fast
-                                       # (one-file edit rebuilds in ~13 s instead of ~260 s for WMO release)
+                                       # measure compile/runtime tradeoffs for your package
   run_tests.py --debug         # unoptimized build (faster to compile, slower to run)
   run_tests.py --shards 6 --skip-build
 """
 import argparse
 import collections
+import concurrent.futures
 import json
 import os
 import re
@@ -46,10 +49,15 @@ def list_tests(config):
     if out.returncode != 0:
         sys.exit(out.stderr or out.stdout)
     classes = collections.OrderedDict()
+    unsupported = []
     for line in out.stdout.splitlines():
         m = re.match(r"^([\w]+)\.([\w]+)/(\w+)$", line.strip())
         if m:
             classes.setdefault(f"{m.group(1)}.{m.group(2)}", []).append(m.group(3))
+        elif line.strip():
+            unsupported.append(line.strip())
+    if unsupported:
+        sys.exit("Unsupported test discovery (XCTest-only helper); use swift test.\n" + "\n".join(unsupported[:10]))
     return classes
 
 
@@ -77,6 +85,8 @@ def main():
     mode.add_argument("--fast", action="store_true")
     parser.add_argument("--package-path", help="SwiftPM package root (default: current directory)")
     args = parser.parse_args()
+    if args.shards < 1:
+        parser.error("--shards must be positive")
     global ROOT, TIMINGS
     if args.package_path:
         ROOT = os.path.abspath(args.package_path)
@@ -102,7 +112,10 @@ def main():
     print(f"running {total} tests in {len(classes)} classes across {len(groups)} shards", flush=True)
     tests_started = time.time()
 
-    bin_path = swift(config, "build", "--show-bin-path", capture_output=True, text=True).stdout.strip()
+    path_result = swift(config, "build", "--show-bin-path", capture_output=True, text=True)
+    if path_result.returncode:
+        sys.exit(path_result.stderr or "could not locate test products")
+    bin_path = path_result.stdout.strip()
     bundles = {b[: -len(".xctest")]: os.path.join(bin_path, b) for b in os.listdir(bin_path) if b.endswith(".xctest")}
     if not bundles:
         sys.exit(f"no .xctest bundle in {bin_path}")
@@ -110,26 +123,35 @@ def main():
 
     # Run bundles directly with xctest: `swift test` holds the .build lock, which would
     # serialize the shards.
-    procs = []
+    jobs = []
     os.makedirs(os.path.join(ROOT, ".build", "test-shards"), exist_ok=True)
     for index, group in enumerate(groups):
         by_bundle = collections.defaultdict(list)
         for name in group:
             by_bundle[bundles.get(name.split(".")[0], fallback)].append(name)
         log_path = os.path.join(ROOT, ".build", "test-shards", f"shard-{index}.log")
-        log = open(log_path, "w")
-        script = " && ".join(
-            f"xcrun xctest -XCTest {','.join(names)} '{bundle}'" for bundle, names in by_bundle.items()
-        )
-        procs.append((subprocess.Popen(["/bin/sh", "-c", script], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT), log, log_path))
+        jobs.append((by_bundle, log_path, group))
+
+    def run_shard(job):
+        by_bundle, log_path, group = job
+        code = 0
+        with open(log_path, "w") as log:
+            for bundle, names in by_bundle.items():
+                result = subprocess.run(["xcrun", "xctest", "-XCTest", ",".join(names), bundle],
+                                        cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+                if result.returncode:
+                    code = result.returncode
+                    break
+        return code, log_path, group
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        outcomes = list(pool.map(run_shard, jobs))
 
     failures, class_time = [], collections.Counter()
     case_re = re.compile(r"Test Case '-\[(\w+)\.(\w+) (\w+)\]' (passed|failed) \(([\d.]+) seconds\)")
     started_re = re.compile(r"Test Case '-\[(\w+)\.(\w+) (\w+)\]' started")
     exit_code = 0
-    for proc, log, log_path in procs:
-        proc.wait()
-        log.close()
+    for returncode, log_path, group in outcomes:
         with open(log_path) as f:
             text = f.read()
         shard_failures = 0
@@ -140,14 +162,22 @@ def main():
             if status == "failed":
                 failures.append(f"{module}.{cls}/{test}")
                 shard_failures += 1
-        if proc.returncode != 0 and not shard_failures:
-            exit_code = proc.returncode or 1
+        expected = {(module, cls, test) for name in group
+                    for module, cls in [name.split(".", 1)] for test in classes[name]}
+        missing = expected - finished_cases
+        unexpected = finished_cases - expected
+        if missing or unexpected:
+            exit_code = 1
+            failures.extend(f"{m}.{c}/{t} (not completed)" for m, c, t in sorted(missing))
+            print(f"test coverage mismatch: {len(missing)} missing, {len(unexpected)} unexpected; {log_path}")
+        if returncode != 0 and not shard_failures:
+            exit_code = 1
             crashed = [c for c in started_re.findall(text) if c not in finished_cases]
             for module, cls, test in crashed:
                 failures.append(f"{module}.{cls}/{test} (crashed)")
             print(f"shard crashed or failed to run: {log_path}")
 
-    if not args.patterns:
+    if not args.patterns and not failures and not exit_code:
         with open(TIMINGS, "w") as f:
             json.dump(class_time, f, indent=0, sort_keys=True)
 

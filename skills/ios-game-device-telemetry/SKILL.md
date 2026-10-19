@@ -23,19 +23,22 @@ Include:
 
 - presented fps and a cadence histogram; completed GPU ms p50/p90; encode CPU ms; authority
   tick ms (mean/max);
-- **miss attribution**: each presented miss blamed on GPU, encode, or main thread;
+- **miss attribution**: correlate misses with GPU, encode and callback timing; keep an unknown
+  category when evidence is insufficient rather than forcing a causal label;
   `stall=` counts display-link callbacks arriving > 1.5 frames late (busy main thread);
 - quality state: render scale, tier, upscaler mode, shader level, heat policy step;
 - OS thermal state and Low Power Mode;
-- build identity (git commit baked in at build time) on the first line.
+- build identity, session ID, device/OS, scenario, power state and sampling configuration on
+  the first line. Rotate bounded logs by session and flush off the critical render path.
 
-Plus event lines: `LaunchSummary tapToPlayableMs=…`, `LEVEL_SWITCH render phase=t6s
+Plus event lines: `LaunchSummary processToInteractiveMs=…`, `LEVEL_SWITCH render phase=t6s
 liveCompleted=… callbacks=…`, `presentationWatchdog action=…`, command-buffer failures.
 
 ## Pull it before anything else
 
-Many apps rewrite the log on launch, and installing a build resets the container's files. After a
-play session, **pull first**, then reinstall/relaunch:
+Apps may rotate logs on launch; uninstalling deletes the app container, while an ordinary update
+generally preserves data. Pull the session log before changing builds or relaunching so the app
+cannot overwrite the evidence:
 
 ```bash
 xcrun devicectl list devices
@@ -48,8 +51,9 @@ launching fails while the phone is locked, so ask whoever has the phone to tap t
 
 ## Read it in this order
 
-1. **Sample count.** Zero samples means the render loop or the log writer is dead — that is the
-   bug. (Reopen the writer's handle if the file's inode changed under it.)
+1. **Sample count and identity.** Zero samples can mean a dead loop/writer, wrong path, stale
+   session, disabled instrumentation, or a failed copy. Check build/session identity and writer
+   health before diagnosing rendering. Reopen a handle after intentional file rotation.
 2. Launch summary.
 3. Presented fps, GPU/CPU ms.
 4. `dynres` / miss attribution / stalls.

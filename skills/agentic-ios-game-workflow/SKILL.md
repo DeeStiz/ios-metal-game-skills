@@ -12,26 +12,30 @@ Lessons from building a native Swift/Metal game mostly with AI agents.
 
 Include: what the game is, where things live, how to build and test each layer, how to run a
 smoke, how levels/data are validated, evidence rules, and "preserve uncommitted work".
-Point at docs for depth. Docs are reference, not gates.
+Point at docs for depth; explicitly identify any required checks and why they exist.
 
-**Don't** add mandatory skill loading, golden-hash rebaselines, approval records, evidence
-matrices, per-change ledgers or source-text policing. When a project accumulates a long
-AGENTS.md, a "skill contract", dozens of source-guard test files and approval paperwork for
-assets, every change paid for it and agents spent their effort satisfying rituals. Removing it
-made agents faster *and* the remaining tests more meaningful. Add a check only for a concrete
-recurring defect.
+Keep required routing and checks that prevent demonstrated defects. Prefer concise instructions
+and linked references over repeated paperwork. Respect repository/user instructions; do not
+remove gates merely because another project did not need them. Golden images/hashes are useful
+for intentional compatibility contracts, but should have a deliberate review/update process.
 
 ## Tests that help agents
 
 - Test **properties**, not frozen content: save/restore round-trips, equivalent paths agree,
   read-only queries don't mutate, a changed input invalidates a cache, determinism per seed.
-- Avoid tests that parse source text, pin exact coordinates/counts, or compare golden hashes of
-  content — they fail on every legitimate edit and teach agents to "update the number".
-- Shared expensive fixtures (compiled scene, terrain) make `swift test --parallel` slow because
-  each test process rebuilds them. `scripts/run_tests.py` (this skill) builds once and runs whole
-  classes in a few long-lived `xctest` shards, balanced by recorded timings; `--fast` gives a
-  ~13 s incremental optimized rebuild; logs go to `.build/test-shards/`. Filter by class name
-  substring for focused checks.
+- Avoid source-text or frozen-content tests when behavior is the real contract. Exact values or
+  golden hashes can be appropriate for serialization, deterministic fixtures and approved visual
+  baselines; explain the invariant and require review when changing it.
+- For macOS **XCTest-only** SwiftPM packages with expensive shared fixtures,
+  `scripts/run_tests.py` builds once and runs classes in long-lived `xctest` shards. It requires
+  Python 3.14 and Xcode, rejects unknown/Swift Testing discovery, and verifies every selected
+  test completed. Use standard `swift test` for mixed-framework packages or Swift Testing.
+  `--fast` uses debug configuration with `-O` in a separate scratch directory; validate that
+  configuration's behavior before relying on it. Filter by class-name substring for focused
+  runs. Timings depend on the package; logs go to `.build/test-shards/`.
+- Keep one runner per package scratch directory at a time; worktrees isolate parallel builds.
+  Example: `python3.14 scripts/run_tests.py --package-path /path/to/Engine --shards 4`.
+  Here `scripts/` is relative to the installed skill folder, not an assumed app-repo script.
 
 ## Pick the check that matches the change
 
@@ -40,17 +44,19 @@ recurring defect.
 | Engine logic | focused engine test classes |
 | Renderer / shaders | an app build (SwiftPM tests don't compile them) + a Simulator capture if visuals matter |
 | `project.yml` / added or renamed app files | `xcodegen generate`, then app build |
-| Level data | level CLI `validate` + `check`, then an autopilot run |
+| Level data | schema/semantic checks, then representative automated or human playthrough |
 | Visual change | before/after captures from a fixed camera, or the VRT harness |
 | Performance or heat | Release build on a device + device log; never the Simulator |
 
-Send verbose build/test output to files and grep (`> /tmp/build.log 2>&1; grep error:`).
+Save verbose output to a log, preserve the command's exit status, and inspect its failure summary.
+A grep result is not a build/test result. Use unique log paths for concurrent runs.
 
 ## Parallel agents
 
-- One **git worktree per agent** and a private `-derivedDataPath /tmp/DD-<name>` (each is
-  2–3 GB; delete when merged).
-- Merge with `git merge`; on a `project.pbxproj` conflict regenerate the project, never hand-edit.
+- For authorized parallel work, use an isolated worktree and private DerivedData per agent.
+  Build-output size varies; clean up owned temporary output when it is no longer needed.
+- Use the repository's integration workflow. If a project generator owns `project.pbxproj`,
+  regenerate after conflicts; otherwise resolve the Xcode project carefully and build it.
 - Share a few simulator devices by UDID; wait for a busy one instead of erasing it.
 - Route work by model capability: cheap/fast models for docs, log summaries, prompt lists;
   mid-tier for level authoring, tuning, HUD tweaks, merges and re-verification; the strongest for
@@ -67,8 +73,9 @@ source/tests, Simulator (functional/visual), or device (performance/thermal). A 
 ## Device logs
 
 Pull the on-device perf log **before** reinstalling or relaunching (see
-`ios-game-device-telemetry`). Install builds to the phone, but only launch when the person asks —
-phones are often locked.
+`ios-game-device-telemetry`). Follow the task's device authorization and preserve active sessions.
+When launch is authorized, proceed on the available device; report a locked/unavailable device
+without claiming a successful launch. Verify installation and process launch separately.
 
 ## Secrets
 
@@ -79,5 +86,5 @@ committed.
 ## Asset generation
 
 Keep generator prompts, source files and output hashes next to generated assets; keep licensing
-notes with sources. Make approval metadata informational — explicit resource selection decides
-what ships.
+notes with sources. Follow the project's licensing and asset-selection requirements; distinguish
+provenance records from any approvals actually needed to ship an asset.

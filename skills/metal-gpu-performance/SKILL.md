@@ -8,26 +8,28 @@ license: MIT
 
 ## 1. Make measurements repeatable first
 
-- **Pin the GPU clock** for A/B runs: Xcode → Devices → Induced performance state → Minimum, then
-  Medium. On a flagship phone most of a real session ran at the *Minimum* GPU state, starting
-  ~25 s in while thermal was still nominal. Design for that state (goal: ≤ 15 ms total GPU at
-  Minimum for 60 fps with margin).
-- **Scripted scenarios only.** Unscripted launches drifted and were not comparable. Keep three:
+- Where supported, use Xcode's induced GPU performance states for controlled A/B measurements.
+  Also measure normal sustained gameplay with automatic power management. Record the selected
+  state; induced states do not establish shipping battery life or thermal behavior.
+- **Use scripted scenarios for comparable A/B runs.** Unscripted launches drifted and were not comparable. Keep three:
   a static heavy view (fixed spawn pose), a moving camera (scripted path), and a destruction
   burst (same spawn + auto-fire N explosives).
-- **Per-pass GPU timing** with counter sample buffers or command-buffer `gpuStartTime/gpuEndTime`
-  per pass, logged as `gpuPasses=main:7.8,csm:2.2,…`.
+- **Per-pass GPU timing** requires supported counter sampling boundaries or an Instruments
+  trace. Command-buffer `gpuStartTime/gpuEndTime` measure the whole completed command buffer,
+  not each encoder inside it. Do not split production buffers just to pretend these are pass
+  timings. Label passes and report unsupported measurements as unavailable.
 - Release builds, physical device, name the device and scenario in every number. Simulator
   numbers are only good for *relative* counts (draws, triangles), never time.
 
 ## 2. Geometry is often the unexamined third of the frame
 
-Main pass + shadow vertex work was ~30% of GPU time; earlier audits had only looked at fragment
-ALU.
+Measure vertex and shadow work as well as fragment cost. Fragment-only optimization can miss
+a significant geometry bottleneck in a foliage-heavy or destructible scene.
 
-- **Vertex size.** `float3 + float3 + float4 + float2 + uint` pads to 64 B. Step 1: a 12 B
-  position-only stream for shadow and motion passes (bit-identical). Step 2: pack the main stream
-  (packed position, half/snorm normal and tangent, half2 UV) — 40 B shipped.
+- **Vertex size.** Inspect actual host/shader stride and alignment rather than summing field
+  widths. Consider a packed position-only stream for passes that need no other attributes,
+  then compressed main attributes. Verify layout, precision and deformation requirements;
+  skinned, alpha-tested and displaced shadow/motion passes may need additional inputs.
 - **Shadow casters per cascade.** Don't give every cascade the same caster list. Require a minimum
   caster radius per cascade relative to texel size; skip foliage cards in the far cascade. Build
   the lists once in the candidate index so steady frames cost nothing.
@@ -51,7 +53,8 @@ ALU.
   one uber-shader; check register count/occupancy in the shader profiler before and after.
 - Bloom chain in `rg11b10Float` instead of `rgba16Float` (keep a fallback; check banding before
   tone mapping).
-- Memoryless, unstored depth for the main pass when nothing samples it later.
+- Memoryless, unstored depth only when nothing reads it after the pass. Temporal upscaling,
+  motion reconstruction and depth-aware postprocessing often require stored depth.
 - Half-resolution volumetrics/AO with a bilateral upsample.
 - Temporal upscaling with jitter is the biggest fragment lever (see `metal-adaptive-quality`).
 
@@ -87,7 +90,9 @@ A house collapse produced a 245 ms authority tick (186 ms static-collision topol
 7. Medium-risk: shadow LODs, fragment variants, bloom format.
 8. Large: argument tables/ICB, packed vertices, impostors — measure after 1–7.
 
-Result on device after steps 1–6: GPU median 13.0 → 9.0 ms, missed authority steps 360+ → 5,
-MetalFX mode flips 53 → 10 per run.
+For each experiment record device/OS, build, scenario, resolution, quality, power state, duration
+and sample count. Historical reductions motivate these hypotheses but do not predict your gain.
 
 See `references/profiling-commands.md` for xctrace / Metal HUD commands.
+
+Source: [GPU command-buffer timing](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime). Geometry budgets and pass costs above are case-study examples; remeasure for your assets and device.

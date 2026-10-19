@@ -13,13 +13,18 @@ xcrun devicectl device install app --device "$DEVICE" \
 xcrun devicectl device process launch --device "$DEVICE" --terminate-existing "$BUNDLE_ID"
 ```
 
-Launching fails while the phone is locked; install, then ask the person holding it to tap the app.
+Launch requires an available, unlocked device. If locked, report that condition and have the
+owner unlock or launch it. Installation and process launch are separate evidence from gameplay.
 
 ## Metal System Trace
 
+Find the app's current PID on the selected device first. Template names and exported schemas
+vary by Xcode/device; inspect `xcrun xctrace list templates`, `record --help` and the export TOC.
+The schema below is illustrative; use the one actually present in your trace.
+
 ```bash
 xcrun xctrace record --template 'Metal System Trace' --device "$DEVICE" \
-  --attach "$BUNDLE_ID" --time-limit 60s --output /tmp/run.trace
+  --attach "$PID" --time-limit 60s --output /tmp/run.trace
 xcrun xctrace export --input /tmp/run.trace --toc            # find table schemas
 xcrun xctrace export --input /tmp/run.trace \
   --xpath '/trace-toc/run[@number="1"]/data/table[@schema="metal-gpu-intervals"]' > gpu.xml

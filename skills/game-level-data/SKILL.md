@@ -8,7 +8,8 @@ license: MIT
 
 With this approach a single hard-coded scene can grow into many levels, a campaign, a daily
 challenge and a player-facing level creator — all JSON, all validated, all playable end to end by
-an autopilot.
+an autopilot where the game supports it. The schema and CLI below are designs to implement,
+not tools bundled with this skill.
 
 ## Format
 
@@ -22,11 +23,26 @@ an autopilot.
   `environment` (weather, time of day, haze).
 - Everything the shipped scene had fixed must become movable, rotatable and removable, or a
   level eventually needs to fight it ("nothing stays at its shipped place or traps").
-- Version the schema; migrate on load.
+- Version the schema; migrate supported versions on load and reject unknown future versions.
+- Specify merge rules: for example recursively merge objects, replace arrays as a whole, and
+  use an explicit remove operation rather than an ambiguous null. Resolve the base first;
+  reject cycles, duplicate entity IDs, unresolved references and unsupported fields.
+- Restrict file-based extends to an allowed content root; bound depth, file size, entity counts
+  and numeric ranges. Run validation in the app too when loading external/user-authored data.
 
-## Validate on the Mac, not in the app
+Example overlay (the actual field names must match your schema):
 
-Ship a small CLI from the engine package (same code the app uses):
+```json
+{"schemaVersion": 1, "extends": "base-yard", "environment": {"timeOfDay": 18.0}}
+```
+
+Document units, handedness, up axis, origin, rotation order and ID stability in the schema.
+Resolve author-friendly relationships into a canonical product before runtime use.
+
+## Validate before launching
+
+Implement a small CLI from the engine package using the same validation code as the app.
+The following commands describe the proposed interface, not installed executables:
 
 ```
 level-tool validate L.json        # schema, references, ranges
@@ -48,22 +64,27 @@ Agents run `validate` + `check` before ever launching the Simulator. Errors name
 
 ## Daily challenge
 
-UTC day number → curated theme rotation (shuffled cycles) → intent → composer. Every
-player gets the same level; scene id `daily.YYYY-MM-DD`. One scored attempt per day, unlimited
-practice.
+Optional product policy: UTC day → versioned theme rotation → intent → composer. For identical
+levels across players, include content/generator version as well as seed. Define offline clock
+behavior and server authority for competitive scores. One scored attempt plus unlimited practice
+is a possible rule, not a requirement for this architecture.
 
 ## Loading levels in-process
 
 Level-derived state must live in a per-level context so switching levels does not need a
-relaunch (see `metal-game-architecture/references/level-context.md`). Precedence: env var
-(automation) → menu selection → saved active level → bundled default.
+relaunch. Stop or retire old-generation work before publishing the new context; clear caches
+keyed only by reusable entity IDs and retain caches keyed by complete content identity.
+Example selection precedence: debug override → menu selection → saved level → bundled default.
+Keep debug overrides unavailable in normal shipping play.
 
-## A level is done when
+## Example acceptance checks
 
 1. `validate` and `check` pass.
-2. A fair autopilot route (enemies on, no cheats) logs `outcome=completed`.
-3. VRT shots exist for it and match the baseline.
-4. Its route is saved next to the level for regression runs.
+2. A representative playthrough reaches its objective. If an autopilot exists, run it with real
+   player actions and no cheats; otherwise record a human/device playthrough.
+3. Representative captures have been reviewed; compare against an accepted baseline if available.
+4. Save any automated route next to the level for regression runs. Automation is not a substitute
+   for human assessment of readability, pacing and enjoyment.
 
 Playtest notes worth keeping in the level's doc: sight ranges vs. enemy positions (can the
 intended approach actually be taken unseen?), how much force a structure really needs to fall,

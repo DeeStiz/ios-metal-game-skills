@@ -32,5 +32,7 @@ Ground rules that apply to all of them:
 ## Maintaining this repo
 
 - One folder per skill under `skills/`; `name` in the frontmatter equals the folder name.
-- `python3 scripts/validate_skills.py` must pass.
+- `python3.14 scripts/validate_skills.py` and `python3.14 -m unittest discover -s tests -v` must pass.
+- Use Python 3.14; install development dependencies from `requirements-dev.txt`.
+- For test-runner changes on macOS, run `python3.14 tests/swift_integration.py`.
 - No project-specific identifiers, device UDIDs, team IDs, bundle IDs or secrets.

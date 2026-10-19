@@ -1,6 +1,6 @@
 ---
 name: game-destruction-physics
-description: Build destructible terrain and structures on iOS with a native physics engine (Jolt via a C bridge) while keeping the simulation deterministic and hitch-free - voxel/SDF terrain edits, structural support and progressive collapse, explosives tuning, craters, and async collision rebuilds. Use when integrating Jolt or another C++ physics engine into Swift, adding destruction, or fixing hitches and crashes after explosions.
+description: Build destructible terrain and structures on iOS with a native physics engine (Jolt via a C bridge) with explicit determinism and frame-budget constraints - voxel/SDF terrain edits, structural support and progressive collapse, explosives tuning, craters, and async collision rebuilds. Use when integrating Jolt or another C++ physics engine into Swift, adding destruction, or fixing hitches and crashes after explosions.
 license: MIT
 ---
 
@@ -14,12 +14,13 @@ license: MIT
   commits them and returns results. Gameplay facts publish only after the native commit.
 - Validate every handle crossing the boundary — a grenade waking sleeping debris crashed on a
   stale body ID.
-- Batch add/remove (`AddBodiesPrepare`/`AddBodiesFinalize`); optimise the broadphase after bulk
-  static changes. Expose worker count and solver steps as env knobs (2 workers and 4 velocity / 1
-  position steps were a good phone default).
+- Batch supported add/remove operations (`AddBodiesPrepare`/`AddBodiesFinalize` for addition).
+  Profile broadphase optimization after bulk edits; it is not free. Tune worker count and solver
+  iterations using stability, tunneling and sustained-device-cost tests, not a universal preset.
 - Register real terrain and building statics. A "legacy floor" plane hid many bugs; remove it from
   production paths.
-- Physics substeps ≤ 1/120 s under a 1/60 s authority step.
+- Choose physics substeps for object speeds, collision thickness and solver stability; 1/120 s
+  substeps under 1/60 s gameplay are an example, not a requirement. Consider CCD where needed.
 
 ## Terrain you can tunnel through
 
@@ -27,7 +28,7 @@ license: MIT
   banks). Fill the interior solid from chunk floor to surface so sphere/capsule subtraction bores
   real navigable cavities, not visual holes.
 - Deterministic generation: integer-hash value noise, fbm and ridged fbm from a seed (no
-  Foundation RNG); test that a seed reproduces bytes and that variants differ.
+  unseeded RNG); test that a seed reproduces bytes and that variants differ.
 - Edits mark dirty bounds → async remesh + collision + navigation refresh. Water reconciles with
   the edit before presentation.
 - Thin features cause "see-through" reports. Keep enough rock mass around likely tunnel paths
@@ -64,5 +65,18 @@ Also watch for growth over long sessions (debris never sleeping, caches keyed pe
 - A tunnel bored upward reaches near the summit and stays enclosed.
 - Save → restore preserves world hash; read-only queries don't mutate.
 - A changed input invalidates a cache; equivalent implementations agree.
-- Avoid tests that freeze content (exact coordinates, counts, golden hashes) — they block every
-  level edit without catching bugs.
+- Prefer property tests for editable content. Pin exact data or hashes only for deliberate
+  compatibility/replay fixtures, with a reviewed update process when those contracts change.
+
+## Determinism and commit timing
+
+Define the supported replay contract (same build/device, cross-device replay, or lockstep). Pin
+Jolt version, compiler/build configuration, worker/solver settings and deterministic operation
+ordering. Checkpoint native physics state as well as gameplay state. A revision fence prevents
+stale collision products from committing, but does not choose a reproducible commit tick.
+Schedule commits at an agreed tick with a readiness policy, or record commit events for replay.
+Test the same input/edit trace with delayed workers, save/restore, and each supported platform.
+
+The weapon balance and geometry examples above illustrate one destruction design. Adapt them to
+player dimensions, materials and game rules; do not change weapon behavior merely to satisfy an
+example. Source: [Jolt architecture and determinism](https://github.com/jrouwe/JoltPhysics/blob/master/Docs/Architecture.md).
