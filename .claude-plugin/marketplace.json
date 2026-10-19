@@ -1,0 +1,15 @@
+{
+  "name": "ios-metal-game-skills",
+  "owner": { "name": "DeeStiz", "url": "https://github.com/DeeStiz" },
+  "metadata": {
+    "description": "Agent skills for native iOS Metal game development."
+  },
+  "plugins": [
+    {
+      "name": "ios-metal-game-skills",
+      "source": "./",
+      "description": "Production lessons for native iOS/iPadOS Metal games, packaged as Agent Skills.",
+      "category": "development"
+    }
+  ]
+}

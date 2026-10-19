@@ -1,0 +1,10 @@
+{
+  "name": "ios-metal-game-skills",
+  "version": "1.0.0",
+  "description": "Production lessons for native iOS/iPadOS games built on Swift, Metal and a physics engine: architecture, frame pacing, adaptive quality, GPU performance, render debugging, launch time, automation, visual regression, device telemetry, levels, destruction, game feel, Game Center, procedural art and agent workflow.",
+  "author": { "name": "DeeStiz", "url": "https://github.com/DeeStiz" },
+  "homepage": "https://github.com/DeeStiz/ios-metal-game-skills",
+  "repository": "https://github.com/DeeStiz/ios-metal-game-skills",
+  "license": "MIT",
+  "keywords": ["ios", "metal", "game", "swift", "metalfx", "jolt", "performance", "skills"]
+}
